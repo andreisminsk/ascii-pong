@@ -155,8 +155,18 @@ class Ball:
         return hit
 
 
+def fit_field(stdscr):
+    """Shrink the field to fit the actual terminal (Termux/phones are
+    narrow). Must run before the game's paddles/ball are created."""
+    global WIDTH, HEIGHT
+    rows, cols = stdscr.getmaxyx()
+    WIDTH = max(20, min(WIDTH, cols - 2))
+    HEIGHT = max(8, min(HEIGHT, rows - 3))
+
+
 def play_game(stdscr):
     """One game to 11. Returns True for rematch, False for quit."""
+    fit_field(stdscr)      # adapt to the real terminal size
     stdscr.nodelay(True)   # restore non-blocking input after any game-end prompt
     stdscr.timeout(80)
     p1 = Paddle((HEIGHT - PADDLE_H) / 2)
@@ -227,9 +237,12 @@ def play_game(stdscr):
                 stdscr.nodelay(False)
                 stdscr.erase()
                 msg = "You win!" if scorer == 0 else "AI wins!"
-                stdscr.addstr(HEIGHT // 2, WIDTH // 2 - 8, msg)
-                stdscr.addstr(HEIGHT // 2 + 1, WIDTH // 2 - 22,
-                              f"Final {score[0]}:{score[1]}   R = rematch, Q = quit")
+                x1 = max(0, WIDTH // 2 - 8)
+                x2 = max(0, WIDTH // 2 - 22)
+                stdscr.addstr(HEIGHT // 2, x1, msg)
+                stdscr.addstr(HEIGHT // 2 + 1, x2,
+                              f"Final {score[0]}:{score[1]}   "
+                              f"R = rematch, Q = quit"[:max(0, WIDTH - 1 - x2)])
                 while True:
                     k = stdscr.getch()
                     if k in (ord('r'), ord('R')):
@@ -252,8 +265,8 @@ def play_game(stdscr):
         stdscr.erase()
         srv = "You (SPACE)" if server == 0 else "AI"
         hint = "  SPACE to serve" if ball.waiting and server == 0 else ""
-        stdscr.addstr(0, 0, f" You {score[0]} : {score[1]} AI  serve: {srv}  "
-                           f"(Up/Down or W/S, q=quit){hint}")
+        stdscr.addstr(0, 0, (f" You {score[0]} : {score[1]} AI  serve: {srv}  "
+                             f"(Up/Down or W/S, q=quit){hint}")[:WIDTH - 1])
         for row in range(1, HEIGHT + 1):
             stdscr.addch(row, 0, '|')
             stdscr.addch(row, WIDTH - 1, '|')
