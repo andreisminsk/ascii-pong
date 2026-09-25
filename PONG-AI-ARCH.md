@@ -144,7 +144,29 @@ raise `AI_MAX_SPEED`/`AI_ACCEL` first (it can now reach the intercepts it
 chooses), then `LLM_MAX_ADJUST`, then try a bigger model. To weaken it,
 lower `AI_MAX_SPEED` — the LLM's choices stay visible but it misses more.
 
-## 9. Next step
+## 9. Cross-platform sound
+
+macOS system sounds don't exist on Android/Termux or bare Linux, so v2
+resolves audio at runtime:
+
+- **Player detection** (first found wins): `afplay` →
+  `termux-media-player` → sox `play` → `mpv` → `paplay` → `ffplay`.
+- **macOS**: uses the original `/System/Library/Sounds/*.aiff` files.
+- **Elsewhere**: synthesizes small WAV tones with the stdlib `wave`
+  module (paddle 880 Hz, wall 440 Hz, serve 660 Hz, score = descending
+  3-note jingle), cached in the temp dir, ~16 KB each, fade edges to
+  avoid clicks. Still zero dependencies.
+- **No player at all**: falls back to the terminal bell, silently.
+- Android needs `pkg install termux-api` for `termux-media-player`.
+
+## 10. Small-terminal support
+
+`fit_field()` shrinks `WIDTH`/`HEIGHT` to the real terminal (floored at
+20×8) before paddles/ball are created; all physics reads the globals
+live, so nothing else changes. `KEY_RESIZE` re-fits mid-game. The probe
+and model-picker screens compute their layout from `getmaxyx()`.
+
+## 11. Next step
 
 Benchmark the model's offset choices against the deterministic optimum
 (reusing the `benchmark_gemma3_270m.py` pattern), and playtest to tune

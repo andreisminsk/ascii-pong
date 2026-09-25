@@ -7,12 +7,19 @@ depends on where it hits the paddle, and rallies speed the ball up.
 """
 import curses
 import math
+import os
 import random
+import shutil
+import struct
 import subprocess
+import sys
+import tempfile
 import time
+import wave
 
 
-# macOS system sounds (fall back to terminal bell elsewhere)
+# macOS system sounds (used when present); other platforms get
+# synthesized WAV tones (see _TONES) played by whatever tool exists.
 _SOUNDS = {
     'paddle': '/System/Library/Sounds/Tink.aiff',
     'wall':   '/System/Library/Sounds/Pop.aiff',
@@ -20,13 +27,89 @@ _SOUNDS = {
     'score':  '/System/Library/Sounds/Submarine.aiff',
 }
 
+# synthesized tones: kind -> [(Hz, ms), ...]
+_TONES = {
+    'paddle': [(880, 60)],
+    'wall':   [(440, 50)],
+    'serve':  [(660, 80)],
+    'score':  [(600, 120), (400, 100), (250, 150)],
+}
+
+_sound_paths = {}   # kind -> playable file (resolved on first beep)
+_player = None      # command builder, or None -> terminal bell
+_sounds_ready = False
+
+
+def _detect_player():
+    """First available audio player. afplay (macOS), Termux:API,
+    sox, mpv, paplay, ffplay. Returns a path->argv builder or None."""
+    candidates = (
+        ('afplay', lambda p: ['afplay', p]),
+        ('termux-media-player',
+         lambda p: ['termux-media-player', 'play', p]),
+        ('play', lambda p: ['play', '-q', p]),
+        ('mpv', lambda p: ['mpv', '--really-quiet', '--no-video', p]),
+        ('paplay', lambda p: ['paplay', p]),
+        ('ffplay', lambda p: ['ffplay', '-nodisp', '-autoexit',
+                               '-loglevel', 'quiet', p]),
+    )
+    for cmd, mk in candidates:
+        if shutil.which(cmd):
+            return mk
+    return None
+
+
+def _synth_wav(path, tones):
+    """Write a small mono WAV for the given (Hz, ms) segments.
+    Pure stdlib; ~4 ms fade edges avoid clicks."""
+    rate = 22050
+    samples = []
+    fade = max(1, int(rate * 0.004))
+    for freq, ms in tones:
+        n = max(1, int(rate * ms / 1000))
+        for i in range(n):
+            env = min(1.0, i / fade, (n - i) / fade)
+            samples.append(int(16000 * env
+                               * math.sin(2 * math.pi * freq * i / rate)))
+    with wave.open(path, 'w') as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        w.writeframes(struct.pack('<%dh' % len(samples), *samples))
+
+
+def _init_sounds():
+    """Resolve a playable file per sound kind. macOS system sounds when
+    present; synthesized WAVs elsewhere (Android/Termux, Linux)."""
+    global _player, _sounds_ready
+    _player = _detect_player()
+    cache = os.path.join(tempfile.gettempdir(), 'ascii-pong-sounds')
+    for kind, tones in _TONES.items():
+        sys_path = _SOUNDS.get(kind)
+        if sys_path and os.path.exists(sys_path):
+            _sound_paths[kind] = sys_path
+            continue
+        if _player is None:
+            continue
+        try:
+            os.makedirs(cache, exist_ok=True)
+            path = os.path.join(cache, kind + '.wav')
+            if not os.path.exists(path):
+                _synth_wav(path, tones)
+            _sound_paths[kind] = path
+        except OSError:
+            pass
+    _sounds_ready = True
+
 
 def beep(kind='paddle'):
     try:
-        path = _SOUNDS.get(kind)
-        if path:
-            subprocess.Popen(['afplay', path], stdout=subprocess.DEVNULL,
-                              stderr=subprocess.DEVNULL)
+        if not _sounds_ready:
+            _init_sounds()
+        path = _sound_paths.get(kind)
+        if path and _player:
+            subprocess.Popen(_player(path), stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL)
         else:
             curses.beep()
     except Exception:
@@ -189,11 +272,16 @@ def play_game(stdscr):
             k = stdscr.getch()
             if k == -1:
                 break
+            if k == curses.KEY_RESIZE:
+                fit_field(stdscr)   # terminal resized mid-game: re-fit
+                continue
             if k in (ord('q'), 27):
                 return False
-            if k in (ord('w'), ord('W'), curses.KEY_UP):
+            if k in (ord('w'), ord('W'), ord('g'), ord('G'),
+                     curses.KEY_UP):
                 p1.push(-IMPULSE)
-            elif k in (ord('s'), ord('S'), curses.KEY_DOWN):
+            elif k in (ord('s'), ord('S'), ord('v'), ord('V'),
+                     curses.KEY_DOWN):
                 p1.push(IMPULSE)
             elif k in (ord(' '), 10) and ball.waiting and server == 0:
                 ball.serve()
@@ -266,7 +354,7 @@ def play_game(stdscr):
         srv = "You (SPACE)" if server == 0 else "AI"
         hint = "  SPACE to serve" if ball.waiting and server == 0 else ""
         stdscr.addstr(0, 0, (f" You {score[0]} : {score[1]} AI  serve: {srv}  "
-                             f"(Up/Down or W/S, q=quit){hint}")[:WIDTH - 1])
+                             f"(W/S/G/V, q=quit){hint}")[:WIDTH - 1])
         for row in range(1, HEIGHT + 1):
             stdscr.addch(row, 0, '|')
             stdscr.addch(row, WIDTH - 1, '|')

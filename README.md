@@ -165,3 +165,27 @@ thinking and never answer — the probe detects this and warns you.
 | `LLM_BREAKER` | 3 | Failures before fallback |
 | `LLM_REARM` | 20 s | Fallback cool-off before retrying the LLM |
 | `LLM_NUM_PREDICT` | 48 | Answer token cap — keep tiny |
+
+## Small terminals & Android
+
+Both games shrink the field to fit the real terminal (`fit_field`,
+floored at 20×8) — works in Termux on phones. Resizing the window
+mid-game re-fits the field. v2's probe and model-picker screens are
+also terminal-aware.
+
+### Sounds on Android/Linux
+
+macOS system sounds don't exist there, so the game detects an audio
+player at runtime (`termux-media-player`, sox `play`, `mpv`, `paplay`,
+`ffplay`) and synthesizes its own WAV tones with the stdlib `wave`
+module — still zero dependencies. On Android install:
+
+```sh
+pkg install termux-api
+```
+
+Without any player it falls back to the terminal bell, silently.
+
+### Extra keys
+
+`G` = up, `V` = down (aliases for W/S — handy on phone keyboards).
