@@ -1,0 +1,9 @@
+# agent cache
+.uhu/
+
+# Python
+__pycache__/
+*.pyc
+
+# LLM debug log
+pong_llm_debug.jsonl
