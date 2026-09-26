@@ -835,7 +835,8 @@ def play_game(stdscr):
                 return False
             if k in (ord('w'), ord('W'), ord('g'), ord('G'),
                      ord('f'), ord('F'), ord('h'), ord('H'),
-                     ord('t'), ord('T'), ord('u'), ord('U'),
+                     ord('r'), ord('R'), ord('t'), ord('T'),
+                     ord('y'), ord('Y'), ord('u'), ord('U'),
                      curses.KEY_UP):
                 # impulse scales with game speed: one click glides
                 # IMPULSE/FRICTION * factor cells (fine nudges in slow mode)
