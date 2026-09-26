@@ -24,8 +24,8 @@ Windows: use WSL.
 
 | Key          | Action                          |
 |--------------|---------------------------------|
-| `W` / `↑`    | Move paddle up (with momentum)  |
-| `S` / `↓`    | Move paddle down (with momentum)|
+| `W` `G` `F` `H` `T` `U` / `↑` | Move paddle up (with momentum)  |
+| `S` `V` `C` `B` / `↓`         | Move paddle down (with momentum)|
 | `SPACE`      | Serve (when it's your serve); pause/resume during play |
 | `Q` / `Esc`  | Quit                            |
 | `R`          | Rematch (at game end)           |
