@@ -835,10 +835,12 @@ def play_game(stdscr):
                 return False
             if k in (ord('w'), ord('W'), ord('g'), ord('G'),
                      curses.KEY_UP):
-                p1.push(-IMPULSE)
+                # impulse scales with game speed: one click glides
+                # IMPULSE/FRICTION * factor cells (fine nudges in slow mode)
+                p1.push(-IMPULSE * speed_factor())
             elif k in (ord('s'), ord('S'), ord('v'), ord('V'),
                      curses.KEY_DOWN):
-                p1.push(IMPULSE)
+                p1.push(IMPULSE * speed_factor())
             elif k in (ord('+'), ord('=')) or k == PAD_PLUS:
                 speed_step(1.25)          # faster (main or numpad)
             elif k in (ord('-'), ord('_')) or k == PAD_MINUS:
