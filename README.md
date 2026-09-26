@@ -26,7 +26,7 @@ Windows: use WSL.
 |--------------|---------------------------------|
 | `W` / `↑`    | Move paddle up (with momentum)  |
 | `S` / `↓`    | Move paddle down (with momentum)|
-| `SPACE`      | Serve (when it's your serve)    |
+| `SPACE`      | Serve (when it's your serve); pause/resume during play |
 | `Q` / `Esc`  | Quit                            |
 | `R`          | Rematch (at game end)           |
 
@@ -43,6 +43,15 @@ Official table-tennis scoring:
   until someone leads by 2.
 - The player who conceded the point does not serve — rotation follows
   the rules above regardless of who scored.
+
+## Prize
+
+Win a game (either version) and `aryna.txt` — ASCII art — is printed
+line by line as a reward, cut to the terminal width (never wrapped).
+The game temporarily leaves curses so the art lands in the terminal's
+normal scrollback: it stays visible, the rematch prompt appears right
+below it, and you can scroll back through everything. Pace:
+`PRIZE_DELAY` (0.15 s/line).
 
 ## Physics
 
@@ -86,6 +95,8 @@ All knobs are constants at the top of `ascii_pong.py`:
 | `BALL_SPEEDUP`  | Speed gained per paddle hit               |
 | `BALL_SPEEDMAX` | Rally speed cap                           |
 | `SPIN`          | How much of speed turns into vertical motion |
+| `PONG_SPEED`    | Env var: global pace dial; default = WIDTH/60, so narrow terminals auto-slow |
+| `+` / `-`       | In-game: speed up / slow down (×1.25 / ×0.8, clamped 0.4–2.5×) — main keyboard and numpad |
 
 ## LLM Opponent (v2)
 

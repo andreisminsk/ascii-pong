@@ -147,6 +147,47 @@ def hide_cursor(stdscr):
         pass
 
 
+PRIZE_DELAY = 0.15     # s per line when the win prize is revealed
+
+
+def win_screen(score):
+    """Human won: leave curses and print the prize art + result as
+    regular terminal output, so it lands in the scrollback and stays
+    put (the rematch prompt prints right below it). Returns True for
+    rematch, False for quit."""
+    curses.endwin()
+    cols = shutil.get_terminal_size().columns
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        'aryna.txt')
+    try:
+        with open(path, encoding='utf-8', errors='replace') as f:
+            lines = f.read().splitlines()
+    except OSError:
+        lines = []
+    print()
+    for ln in lines:
+        print(ln[:cols - 1])       # cut horizontally, never wrap
+        time.sleep(PRIZE_DELAY)
+    print()
+    print(f"You win!  Final {score[0]}:{score[1]}")
+    while True:
+        ans = input("R = rematch, Q = quit > ").strip().lower()
+        if ans in ('r', 'q'):
+            return ans == 'r'
+
+
+def reenter_curses(stdscr):
+    """Fresh curses setup after the win screen ended it (rematch)."""
+    stdscr = curses.initscr()
+    curses.cbreak()
+    curses.noecho()
+    stdscr.keypad(True)
+    hide_cursor(stdscr)
+    stdscr.nodelay(True)
+    stdscr.timeout(80)
+    return stdscr
+
+
 WIDTH, HEIGHT = 60, 18
 PADDLE_H = 4
 
@@ -162,6 +203,38 @@ BALL_SPEED0 = 18.0
 BALL_SPEEDUP = 2.0
 BALL_SPEEDMAX = 55.0
 SPIN = 0.8            # max fraction of speed turned into vertical motion
+
+# Global pace dial: PONG_SPEED overrides; otherwise speed scales with
+# the fitted field width (60 = design width), so narrow terminals
+# (phones) keep the same felt pace instead of a faster game.
+_USER_SPEED = os.environ.get('PONG_SPEED')
+
+
+_speed_mult = 1.0     # runtime +/- adjustment on top of the default
+
+
+def speed_step(d):
+    """Multiply the pace by d (clamped 0.4..2.5). Bound to +/- keys."""
+    global _speed_mult
+    _speed_mult = max(0.4, min(2.5, _speed_mult * d))
+
+
+def speed_factor():
+    """PONG_SPEED (if valid) replaces the width default; the runtime
+    +/- multiplier always applies on top."""
+    base = WIDTH / 60.0
+    if _USER_SPEED is not None:
+        try:
+            base = float(_USER_SPEED)
+        except ValueError:
+            pass
+    return base * _speed_mult
+
+
+# numpad +/- (PDCurses/windows-curses codes; None on ncurses, where
+# numpad operators arrive as ESC O k / ESC O m sequences instead)
+PAD_PLUS = getattr(curses, 'PADPLUS', None)
+PAD_MINUS = getattr(curses, 'PADMINUS', None)
 
 # LLM opponent (v2)
 OLLAMA_URL = os.environ.get('OLLAMA_URL', 'http://localhost:11434')
@@ -206,8 +279,10 @@ class Paddle:
             self.y, self.vy = float(top), 0.0
 
     def hits(self, by):
-        # padded to match the drawn cells (ball floats between grid rows)
-        return self.y - 0.75 <= by <= self.y + PADDLE_H - 0.25
+        # exact match with the drawn cells: paddle occupies screen rows
+        # int(y)+1 .. int(y)+PADDLE_H, ball is drawn at round(by)+1 —
+        # a ball that renders outside the paddle is a real miss
+        return int(self.y) <= round(by) <= int(self.y) + PADDLE_H - 1
 
 
 class Ball:
@@ -311,19 +386,20 @@ SYSTEM = (
     "You are the right paddle in pong. The ball is flying toward you. "
     "Choose your strike. Answer with ONLY one JSON object, nothing else: "
     '{"offset": <number>, "adjust": <number>}\n'
-    "offset: -1..1. Negative = ball strikes your upper half, returns UP. "
-    "Positive = lower half, returns DOWN. 0 = center, straight and fast.\n"
+    "offset: -0.6..0.6. Negative = ball strikes your upper half, returns UP. "
+    "Positive = lower half, returns DOWN. 0 = center, straight and fast. "
+    "Beyond 0.6 the ball slips past the paddle edge and is lost.\n"
     "adjust: -2..2, a small paddle position shift in cells.\n"
     "Tactic: return the ball AWAY from where the human paddle is now."
 )
 
 FEWSHOT = """Example 1:
 ball_y=4.0 ball_vy=-6.0 human_y=3.0 paddle_y=6.0 time_left=1.5 score=3:2 rally=4
-{"offset": 0.8, "adjust": 0.0}
+{"offset": 0.6, "adjust": 0.0}
 
 Example 2:
 ball_y=14.0 ball_vy=5.0 human_y=13.0 paddle_y=8.0 time_left=1.2 score=3:3 rally=2
-{"offset": -0.8, "adjust": 0.0}
+{"offset": -0.6, "adjust": 0.0}
 
 Example 3:
 ball_y=9.0 ball_vy=0.0 human_y=9.0 paddle_y=8.0 time_left=0.4 score=10:10 rally=6
@@ -487,6 +563,12 @@ class AIController:
         # rel = (ball_y - paddle_center) / (PADDLE_H/2)  ->  Ball.bounce
         t = (self.intercept_y - PADDLE_H / 2
              - LLM_BLEND * self.offset * PADDLE_H / 2 + self.adjust)
+        # post-fix hits() is exact: clamp the top into the window where
+        # the arriving ball renders on a drawn paddle cell — wild LLM
+        # offsets saturate at the edge instead of whiffing
+        lo = round(self.intercept_y) - PADDLE_H + 1
+        hi = round(self.intercept_y)
+        t = max(lo, min(hi, t))
         return max(0.0, min(float(HEIGHT - PADDLE_H), t))
 
 
@@ -717,11 +799,13 @@ def play_game(stdscr):
     ctrl = AIController()
     ADVISOR.rearm()               # new game: give the LLM a fresh chance
     ai_serve_at = time.time() + 1.2           # AI serves ~1.2s after reset
+    paused = False                            # SPACE toggles (ball in play)
     last = time.time()
 
     while True:
         now = time.time()
-        dt = min(now - last, 0.2)
+        # global pace dial: PONG_SPEED, or width-based default
+        dt = min(now - last, 0.2) * speed_factor()
         last = now
 
         # Input: drain all pending keys, fully non-blocking
@@ -733,7 +817,21 @@ def play_game(stdscr):
             if k == curses.KEY_RESIZE:
                 fit_field(stdscr)   # terminal resized mid-game: re-fit
                 continue
-            if k in (ord('q'), 27):
+            if k == 27:
+                # Esc, or the first byte of a numpad escape sequence:
+                # ESC O k = numpad '+', ESC O m = numpad '-'
+                k2 = stdscr.getch()
+                if k2 == ord('O'):
+                    k3 = stdscr.getch()
+                    if k3 == ord('k'):
+                        speed_step(1.25)
+                    elif k3 == ord('m'):
+                        speed_step(0.8)
+                    continue
+                if k2 != -1:
+                    continue        # other escape sequence: swallow it
+                return False        # plain Esc quits
+            if k == ord('q'):
                 return False
             if k in (ord('w'), ord('W'), ord('g'), ord('G'),
                      curses.KEY_UP):
@@ -741,15 +839,28 @@ def play_game(stdscr):
             elif k in (ord('s'), ord('S'), ord('v'), ord('V'),
                      curses.KEY_DOWN):
                 p1.push(IMPULSE)
-            elif k in (ord(' '), 10) and ball.waiting and server == 0:
-                ball.serve()
-                # a serve IS the player's hit: no 'paddle' event will fire,
-                # so consult the LLM right now
-                rally += 1
-                ctrl.on_player_hit(ball)
-                seq = ADVISOR.submit(
-                    build_prompt(ctrl, p1, p2, score, rally))
-                ctrl.hit_seq = seq if seq is not None else -1
+            elif k in (ord('+'), ord('=')) or k == PAD_PLUS:
+                speed_step(1.25)          # faster (main or numpad)
+            elif k in (ord('-'), ord('_')) or k == PAD_MINUS:
+                speed_step(0.8)           # slower (main or numpad)
+            elif k in (ord(' '), 10):
+                if ball.waiting and server == 0:
+                    ball.serve()
+                    # a serve IS the player's hit: no 'paddle' event will
+                    # fire, so consult the LLM right now
+                    rally += 1
+                    ctrl.on_player_hit(ball)
+                    seq = ADVISOR.submit(
+                        build_prompt(ctrl, p1, p2, score, rally))
+                    ctrl.hit_seq = seq if seq is not None else -1
+                else:
+                    paused = not paused   # SPACE pauses / resumes
+
+        # Paused: dt = 0 holds the paddles; the ball step is skipped
+        # below and the AI serve stays deferred until resume.
+        if paused:
+            dt = 0.0
+            ai_serve_at = time.time() + 1.2
 
         # Right paddle: steer toward the controller's target
         ADVISOR.maybe_rearm()      # breaker cool-off: retry the LLM
@@ -776,7 +887,7 @@ def play_game(stdscr):
             ball.serve()
             beep('serve')
 
-        if ball.waiting:
+        if ball.waiting or paused:
             scorer = None
         else:
             event = ball.step(dt, p1, p2)
@@ -797,12 +908,14 @@ def play_game(stdscr):
             # Game to 11, win by 2 (official rules)
             beep('score')
             if score[scorer] >= 11 and score[scorer] - score[1 - scorer] >= 2:
+                if scorer == 0:
+                    if win_screen(score):   # prize into scrollback, stays
+                        return True
+                    return False
                 stdscr.nodelay(False)
                 stdscr.erase()
-                msg = "You win!" if scorer == 0 else "AI wins!"
-                x1 = max(0, WIDTH // 2 - 8)
                 x2 = max(0, WIDTH // 2 - 22)
-                stdscr.addstr(HEIGHT // 2, x1, msg)
+                stdscr.addstr(HEIGHT // 2, x2, "AI wins!")
                 stdscr.addstr(HEIGHT // 2 + 1, x2,
                               f"Final {score[0]}:{score[1]}   "
                               f"R = rematch, Q = quit"[:max(0, WIDTH - 1 - x2)])
@@ -834,8 +947,11 @@ def play_game(stdscr):
             mode = f"llm {ctrl.last_ms:.0f}ms" if ctrl.last_ms else "llm"
         else:
             mode = "cpu"
-        stdscr.addstr(0, 0, (f" You {score[0]}:{score[1]} AI[{mode}]  "
-                             f"serve: {srv}  (W/S/G/V, q=quit){hint}"
+        # speed right after the score: never truncated off the header
+        spd = f" {speed_factor():.2f}x"
+        pause = " PAUSED" if paused else ""
+        stdscr.addstr(0, 0, (f" You {score[0]}:{score[1]} AI[{mode}]{spd}{pause}  "
+                             f"serve: {srv}  (W/S/SPC/+/-, q=quit){hint}"
                              )[:WIDTH - 1])
         for row in range(1, HEIGHT + 1):
             stdscr.addch(row, 0, '|')
@@ -885,8 +1001,11 @@ def main(stdscr):
             return
         if action.startswith('model:'):
             LLM_MODEL = action[6:]     # re-probe the new choice
-    while play_game(stdscr):
-        pass
+    while True:
+        again = play_game(stdscr)
+        if not again:
+            break
+        stdscr = reenter_curses(stdscr)   # win screen ended curses
 
 
 if __name__ == "__main__":

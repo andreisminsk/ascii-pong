@@ -130,6 +130,46 @@ def flash():
     except curses.error:
         pass
 
+PRIZE_DELAY = 0.15     # s per line when the win prize is revealed
+
+
+def win_screen(score):
+    """Human won: leave curses and print the prize art + result as
+    regular terminal output, so it lands in the scrollback and stays
+    put (the rematch prompt prints right below it). Returns True for
+    rematch, False for quit."""
+    curses.endwin()
+    cols = shutil.get_terminal_size().columns
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        'aryna.txt')
+    try:
+        with open(path, encoding='utf-8', errors='replace') as f:
+            lines = f.read().splitlines()
+    except OSError:
+        lines = []
+    print()
+    for ln in lines:
+        print(ln[:cols - 1])       # cut horizontally, never wrap
+        time.sleep(PRIZE_DELAY)
+    print()
+    print(f"You win!  Final {score[0]}:{score[1]}")
+    while True:
+        ans = input("R = rematch, Q = quit > ").strip().lower()
+        if ans in ('r', 'q'):
+            return ans == 'r'
+
+
+def reenter_curses(stdscr):
+    """Fresh curses setup after the win screen ended it (rematch)."""
+    stdscr = curses.initscr()
+    curses.cbreak()
+    curses.noecho()
+    stdscr.keypad(True)
+    hide_cursor(stdscr)
+    stdscr.nodelay(True)
+    stdscr.timeout(80)
+    return stdscr
+
 WIDTH, HEIGHT = 60, 18
 PADDLE_H = 4
 
@@ -145,6 +185,38 @@ BALL_SPEED0 = 18.0
 BALL_SPEEDUP = 2.0
 BALL_SPEEDMAX = 55.0
 SPIN = 0.8            # max fraction of speed turned into vertical motion
+
+# Global pace dial: PONG_SPEED overrides; otherwise speed scales with
+# the fitted field width (60 = design width), so narrow terminals
+# (phones) keep the same felt pace instead of a faster game.
+_USER_SPEED = os.environ.get('PONG_SPEED')
+
+
+_speed_mult = 1.0     # runtime +/- adjustment on top of the default
+
+
+def speed_step(d):
+    """Multiply the pace by d (clamped 0.4..2.5). Bound to +/- keys."""
+    global _speed_mult
+    _speed_mult = max(0.4, min(2.5, _speed_mult * d))
+
+
+def speed_factor():
+    """PONG_SPEED (if valid) replaces the width default; the runtime
+    +/- multiplier always applies on top."""
+    base = WIDTH / 60.0
+    if _USER_SPEED is not None:
+        try:
+            base = float(_USER_SPEED)
+        except ValueError:
+            pass
+    return base * _speed_mult
+
+
+# numpad +/- (PDCurses/windows-curses codes; None on ncurses, where
+# numpad operators arrive as ESC O k / ESC O m sequences instead)
+PAD_PLUS = getattr(curses, 'PADPLUS', None)
+PAD_MINUS = getattr(curses, 'PADMINUS', None)
 
 
 class Paddle:
@@ -166,8 +238,10 @@ class Paddle:
             self.y, self.vy = float(top), 0.0
 
     def hits(self, by):
-        # padded to match the drawn cells (ball floats between grid rows)
-        return self.y - 0.75 <= by <= self.y + PADDLE_H - 0.25
+        # exact match with the drawn cells: paddle occupies screen rows
+        # int(y)+1 .. int(y)+PADDLE_H, ball is drawn at round(by)+1 —
+        # a ball that renders outside the paddle is a real miss
+        return int(self.y) <= round(by) <= int(self.y) + PADDLE_H - 1
 
 
 class Ball:
@@ -259,11 +333,13 @@ def play_game(stdscr):
     ball.reset(serve_left=(server == 0), paddle_y=(p1.y if server == 0 else p2.y))
     score = [0, 0]
     ai_serve_at = time.time() + 1.2           # AI serves ~1.2s after reset
+    paused = False                            # SPACE toggles (ball in play)
     last = time.time()
 
     while True:
         now = time.time()
-        dt = min(now - last, 0.2)
+        # global pace dial: PONG_SPEED, or width-based default
+        dt = min(now - last, 0.2) * speed_factor()
         last = now
 
         # Input: drain all pending keys, fully non-blocking
@@ -275,7 +351,21 @@ def play_game(stdscr):
             if k == curses.KEY_RESIZE:
                 fit_field(stdscr)   # terminal resized mid-game: re-fit
                 continue
-            if k in (ord('q'), 27):
+            if k == 27:
+                # Esc, or the first byte of a numpad escape sequence:
+                # ESC O k = numpad '+', ESC O m = numpad '-'
+                k2 = stdscr.getch()
+                if k2 == ord('O'):
+                    k3 = stdscr.getch()
+                    if k3 == ord('k'):
+                        speed_step(1.25)
+                    elif k3 == ord('m'):
+                        speed_step(0.8)
+                    continue
+                if k2 != -1:
+                    continue        # other escape sequence: swallow it
+                return False        # plain Esc quits
+            if k == ord('q'):
                 return False
             if k in (ord('w'), ord('W'), ord('g'), ord('G'),
                      curses.KEY_UP):
@@ -283,8 +373,21 @@ def play_game(stdscr):
             elif k in (ord('s'), ord('S'), ord('v'), ord('V'),
                      curses.KEY_DOWN):
                 p1.push(IMPULSE)
-            elif k in (ord(' '), 10) and ball.waiting and server == 0:
-                ball.serve()
+            elif k in (ord('+'), ord('=')) or k == PAD_PLUS:
+                speed_step(1.25)          # faster (main or numpad)
+            elif k in (ord('-'), ord('_')) or k == PAD_MINUS:
+                speed_step(0.8)           # slower (main or numpad)
+            elif k in (ord(' '), 10):
+                if ball.waiting and server == 0:
+                    ball.serve()
+                else:
+                    paused = not paused   # SPACE pauses / resumes
+
+        # Paused: dt = 0 holds the paddles; the ball step is skipped
+        # below and the AI serve stays deferred until resume.
+        if paused:
+            dt = 0.0
+            ai_serve_at = time.time() + 1.2
 
         # AI: accelerate toward where it wants to be
         want = ball.y if ball.vx > 0 else HEIGHT / 2
@@ -307,7 +410,7 @@ def play_game(stdscr):
             ball.serve()
             beep('serve')
 
-        if ball.waiting:
+        if ball.waiting or paused:
             scorer = None
         else:
             event = ball.step(dt, p1, p2)
@@ -322,12 +425,14 @@ def play_game(stdscr):
             # Game to 11, win by 2 (official rules)
             beep('score')
             if score[scorer] >= 11 and score[scorer] - score[1 - scorer] >= 2:
+                if scorer == 0:
+                    if win_screen(score):   # prize into scrollback, stays
+                        return True
+                    return False
                 stdscr.nodelay(False)
                 stdscr.erase()
-                msg = "You win!" if scorer == 0 else "AI wins!"
-                x1 = max(0, WIDTH // 2 - 8)
                 x2 = max(0, WIDTH // 2 - 22)
-                stdscr.addstr(HEIGHT // 2, x1, msg)
+                stdscr.addstr(HEIGHT // 2, x2, "AI wins!")
                 stdscr.addstr(HEIGHT // 2 + 1, x2,
                               f"Final {score[0]}:{score[1]}   "
                               f"R = rematch, Q = quit"[:max(0, WIDTH - 1 - x2)])
@@ -353,8 +458,12 @@ def play_game(stdscr):
         stdscr.erase()
         srv = "You (SPACE)" if server == 0 else "AI"
         hint = "  SPACE to serve" if ball.waiting and server == 0 else ""
-        stdscr.addstr(0, 0, (f" You {score[0]} : {score[1]} AI  serve: {srv}  "
-                             f"(W/S/G/V, q=quit){hint}")[:WIDTH - 1])
+        # speed right after the score: never truncated off the header
+        spd = f" {speed_factor():.2f}x"
+        pause = " PAUSED" if paused else ""
+        stdscr.addstr(0, 0, (f" You {score[0]}:{score[1]} AI{spd}{pause}  "
+                             f"serve: {srv}  (W/S/SPC/+/-, q=quit){hint}"
+                             )[:WIDTH - 1])
         for row in range(1, HEIGHT + 1):
             stdscr.addch(row, 0, '|')
             stdscr.addch(row, WIDTH - 1, '|')
@@ -372,8 +481,11 @@ def main(stdscr):
     stdscr.keypad(True)
     stdscr.nodelay(True)
     stdscr.timeout(80)
-    while play_game(stdscr):
-        pass
+    while True:
+        again = play_game(stdscr)
+        if not again:
+            break
+        stdscr = reenter_curses(stdscr)   # win screen ended curses
 
 
 if __name__ == "__main__":
